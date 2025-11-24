@@ -4,6 +4,9 @@ A simple, standalone React-based web application for parsing and analyzing raw d
 
 The app runs entirely in the browser—no server required. It uses React for the UI, Tailwind CSS for styling, and regex-based parsing to extract key fields like IP, port, country, organization, and more.
 
+<img width="1389" height="878" alt="image" src="https://github.com/user-attachments/assets/ddf989eb-6f0c-43e1-9f49-29c2b08fbad6" />
+
+
 ## Features
 
 - **Raw Data Parsing**: Paste copied text from FOFA results (e.g., via Ctrl+A, Ctrl+C in the browser) and automatically extract structured data using anchors like "country" lines for reliable delimitation.
@@ -76,4 +79,3 @@ After parsing, it becomes a row in the table with the extracted fields.
 
 MIT License. Feel free to use, modify, and distribute.
 
-<img width="1389" height="878" alt="image" src="https://github.com/user-attachments/assets/ddf989eb-6f0c-43e1-9f49-29c2b08fbad6" />
