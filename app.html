@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FOFA Data Parser</title>
+    
+    <!-- React and ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        body {
+            background-color: #0f172a; /* Slate 900 fallback */
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo } = React;
+
+        // --- Icon Components ---
+        const Download = ({ className }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+        );
+
+        const Search = ({ className }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+        );
+
+        const Filter = ({ className }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+            </svg>
+        );
+
+        const SortAsc = ({ className }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                <path d="M11 5h10"></path>
+                <path d="M11 9h7"></path>
+                <path d="M11 13h4"></path>
+                <path d="M3 17l3 3 3-3"></path>
+                <path d="M6 18V4"></path>
+            </svg>
+        );
+
+        const SortDesc = ({ className }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                <path d="M11 5h10"></path>
+                <path d="M11 9h7"></path>
+                <path d="M11 13h4"></path>
+                <path d="M3 5l3-3 3 3"></path>
+                <path d="M6 2v14"></path>
+            </svg>
+        );
+
+        // --- Main Component ---
+        const FOFADataParser = () => {
+            const [searchTerm, setSearchTerm] = useState('');
+            const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+            const [filterCountry, setFilterCountry] = useState('');
+            const [filterPort, setFilterPort] = useState('');
+            const [rawInput, setRawInput] = useState('');
+            const [showInput, setShowInput] = useState(true);
+            const [parsedData, setParsedData] = useState([]);
+
+            // Parse FOFA data using Regex and Anchors
+            const parseInputData = (input) => {
+                const parsed = [];
+                // Split by newline and remove carriage returns
+                const lines = input.split('\n').map(l => l.trim());
+                
+                // Helper to check if a line is likely garbage (header/nav text)
+                const isGarbage = (line) => {
+                    const garbage = ['Search...', 'AI Lab', 'Pricing', 'Support', 'TOP FID', 'TOP COUNTRIES', 'TOP OPEN PORTS', 'TOP SERVERS', 'TOP PROTOCOLS', 'TOP TITLES', 'Favicon', 'all', 'result', 'Keyword Search'];
+                    return garbage.some(g => line.includes(g)) || line.length < 2;
+                };
+
+                // Helper to extract port from the "Header Line" (e.g. "1.1.1.1 80" or "https://... 443" or "1.1.1.1:8080")
+                const extractPort = (line) => {
+                    // Try "IP:Port" format
+                    const colonMatch = line.match(/:(\d{2,5})\b/);
+                    if (colonMatch) return colonMatch[1];
+                    
+                    // Try "IP Port" or "URL Port" format (Port is usually at end of line)
+                    const spaceMatch = line.match(/\s(\d{2,5})$/);
+                    if (spaceMatch) return spaceMatch[1];
+
+                    // Try "https" implies 443
+                    if (line.includes('https://')) return '443';
+                    if (line.includes('http://')) return '80';
+
+                    return '';
+                };
+
+                // Helper to extract Protocol
+                const extractProtocol = (line, port) => {
+                    if (line.toLowerCase().includes('https')) return 'HTTPS';
+                    if (port === '443') return 'HTTPS';
+                    return 'HTTP';
+                };
+
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+
+                    // CORE ANCHOR: The "country" line is the most reliable delimiter in FOFA results
+                    if (line.startsWith('country ')) {
+                        let entry = {
+                            ip: '', port: '', country: '', region: '', city: '', 
+                            asn: '', organization: '', date: '', server: '', 
+                            title: '', protocol: 'HTTP', domain: '', cloud: ''
+                        };
+
+                        // 1. Parse Location (Current Line)
+                        // Format: country CountryName / RegionName / CityName
+                        const locationParts = line.replace('country ', '').split('/').map(s => s.trim());
+                        entry.country = locationParts[0] || '';
+                        entry.region = locationParts[1] || '';
+                        entry.city = locationParts[2] || '';
+
+                        // 2. Find IP (Usually the non-empty line immediately PRECEDING the country line)
+                        let ipIndex = i - 1;
+                        while (ipIndex >= 0 && (lines[ipIndex] === '' || !lines[ipIndex].match(/^\d+\.\d+\.\d+\.\d+$/))) {
+                             // Special case: sometimes the IP line has just the IP
+                             if (lines[ipIndex].match(/^\d+\.\d+\.\d+\.\d+$/)) break;
+                             ipIndex--;
+                             // Safety break to prevent scanning too far back
+                             if (i - ipIndex > 10) break;
+                        }
+                        
+                        if (ipIndex >= 0 && lines[ipIndex].match(/^\d+\.\d+\.\d+\.\d+$/)) {
+                            entry.ip = lines[ipIndex];
+                        } else {
+                            // Fallback: Try to find IP in the line directly above country if regex failed
+                            // Sometimes line is "1.2.3.4" exactly
+                            if (lines[i-1] && lines[i-1].match(/^\d/)) entry.ip = lines[i-1];
+                        }
+
+                        // 3. Scan BACKWARDS from IP to find the "Header Line" (Start of block)
+                        // The Header Line usually contains IP+Port or URL+Port, or is the first line of the block.
+                        // Between Header Line and IP Line, we find Title and Cloud info.
+                        let headerIndex = ipIndex - 1;
+                        let foundHeader = false;
+                        
+                        // We scan back until we hit a line that looks like the start of an entry 
+                        // (Contains IP/URL and usually Port, or we hit a date/empty gap from previous block)
+                        while (headerIndex >= 0 && (i - headerIndex < 15)) {
+                            const l = lines[headerIndex];
+                            
+                            // Check if this is the Header Line (contains the IP again, or https://IP)
+                            if (l.includes(entry.ip) || (entry.ip && l.includes(entry.ip.replace(/\./g, '')))) { 
+                                // Loose check, better is checking for IP pattern again with suffix
+                                entry.port = extractPort(l);
+                                entry.protocol = extractProtocol(l, entry.port);
+                                foundHeader = true;
+                                break;
+                            }
+                            headerIndex--;
+                        }
+                        
+                        // If we didn't find a clear header line containing the IP, the IP line itself might be the header if logic failed, 
+                        // but usually in this format there is a distinct header line.
+                        
+                        // 4. Extract Title and Cloud from the lines betwen Header and IP
+                        if (foundHeader) {
+                            for (let k = headerIndex + 1; k < ipIndex; k++) {
+                                const l = lines[k];
+                                if (!l) continue;
+                                if (l === 'CloudName') {
+                                    entry.cloud = lines[k+1] || '';
+                                    k++; // skip value line
+                                } else if (l !== 'CloudName' && !isGarbage(l) && l !== 'aws' && l !== 'aliyun') {
+                                    // Assume it's a title if it's not a keyword
+                                    if (!entry.title) entry.title = l;
+                                }
+                            }
+                        }
+
+                        // 5. Scan FORWARDS from Country line for Metadata (ASN, Org, Date, Headers)
+                        for (let j = i + 1; j < lines.length && j < i + 20; j++) {
+                            const l = lines[j];
+                            
+                            if (l.startsWith('country ')) break; // Hit next entry
+                            
+                            if (l.startsWith('ASN:')) {
+                                entry.asn = l.replace('ASN:', '').trim();
+                            } else if (l.startsWith('Organization:')) {
+                                entry.organization = l.replace('Organization:', '').trim();
+                            } else if (l.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                                entry.date = l;
+                            } else if (l.toLowerCase().startsWith('server:')) {
+                                entry.server = l.substring(l.indexOf(':') + 1).trim();
+                            } else if (l.startsWith('HTTP/')) {
+                                // Extract status code or protocol version
+                                // entry.protocol = l.split(' ')[0];
+                            } else if (l === 'Certificate') {
+                                // Stop scanning headers usually
+                            }
+                            
+                            // Attempt to find domain in text if not set
+                            if (!entry.domain && l.match(/[a-zA-Z0-9-]+\.(com|org|net|edu|gov|io|sk|pl|cn|de)/)) {
+                                const domainMatch = l.match(/([a-zA-Z0-9-]+\.(?:com|org|net|edu|gov|io|sk|pl|cn|de)[a-zA-Z.]*)/);
+                                if (domainMatch && !l.includes('@')) entry.domain = domainMatch[1];
+                            }
+                        }
+
+                        // Fallback defaults
+                        if (!entry.port) entry.port = entry.protocol === 'HTTPS' ? '443' : '80';
+                        
+                        parsed.push(entry);
+                    }
+                }
+                
+                return parsed;
+            };
+
+            const handleParseData = () => {
+                if (rawInput.trim()) {
+                    const newData = parseInputData(rawInput);
+                    setParsedData(newData);
+                    setShowInput(false);
+                    setSearchTerm('');
+                    setFilterCountry('');
+                    setFilterPort('');
+                }
+            };
+
+            const handleReset = () => {
+                setParsedData([]);
+                setRawInput('');
+                setShowInput(true);
+            };
+
+            const rawData = parsedData;
+            
+            // --- Sort & Filter Logic ---
+            const filteredAndSortedData = useMemo(() => {
+                let filtered = rawData.filter(item => {
+                    const matchesSearch = 
+                        item.ip.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        item.country.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        item.organization.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        (item.domain || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        (item.title || '').toLowerCase().includes(searchTerm.toLowerCase());
+                    
+                    const matchesCountry = !filterCountry || item.country.includes(filterCountry);
+                    const matchesPort = !filterPort || item.port === filterPort;
+                    
+                    return matchesSearch && matchesCountry && matchesPort;
+                });
+
+                if (sortConfig.key) {
+                    filtered.sort((a, b) => {
+                        const aVal = a[sortConfig.key] || '';
+                        const bVal = b[sortConfig.key] || '';
+                        
+                        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+                        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+                        return 0;
+                    });
+                }
+
+                return filtered;
+            }, [rawData, searchTerm, filterCountry, filterPort, sortConfig]);
+
+            const handleSort = (key) => {
+                setSortConfig(prev => ({
+                    key,
+                    direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+                }));
+            };
+
+            const exportToCSV = () => {
+                const headers = ['IP', 'Port', 'Country', 'Region', 'City', 'ASN', 'Organization', 'Date', 'Server', 'Title', 'Protocol', 'Domain', 'Cloud'];
+                const rows = filteredAndSortedData.map(item => [
+                    item.ip,
+                    item.port,
+                    item.country,
+                    item.region,
+                    item.city,
+                    item.asn,
+                    item.organization,
+                    item.date,
+                    item.server || '',
+                    item.title || '',
+                    item.protocol,
+                    item.domain || '',
+                    item.cloud || ''
+                ]);
+
+                const csvContent = [
+                    headers.join(','),
+                    ...rows.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(','))
+                ].join('\n');
+
+                const blob = new Blob([csvContent], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `fofa_data_${new Date().toISOString().split('T')[0]}.csv`;
+                a.click();
+                window.URL.revokeObjectURL(url);
+            };
+
+            const uniqueCountries = [...new Set(rawData.map(item => item.country))].filter(Boolean);
+            const uniquePorts = [...new Set(rawData.map(item => item.port))].filter(Boolean);
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-6">
+                <div className="max-w-7xl mx-auto">
+                    <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 mb-6">
+                    <h1 className="text-3xl font-bold text-white mb-2">FOFA Data Parser & Analyzer</h1>
+                    <p className="text-blue-200">Paste raw FOFA search results (Ctrl+A, Ctrl+C from browser) to parse into a table.</p>
+                    </div>
+
+                    {showInput && (
+                    <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 mb-6">
+                        <h2 className="text-xl font-bold text-white mb-4">Paste FOFA Data</h2>
+                        <textarea
+                        value={rawInput}
+                        onChange={(e) => setRawInput(e.target.value)}
+                        placeholder="Paste your raw copied text here..."
+                        className="w-full h-64 px-4 py-3 bg-white/20 border border-white/30 rounded-lg text-white placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 font-mono text-xs md:text-sm"
+                        />
+                        <div className="mt-4 flex gap-4">
+                        <button
+                            onClick={handleParseData}
+                            disabled={!rawInput.trim()}
+                            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg transition-colors shadow-lg font-semibold"
+                        >
+                            Parse Data
+                        </button>
+                        {parsedData.length > 0 && (
+                            <button
+                            onClick={() => setShowInput(false)}
+                            className="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors shadow-lg"
+                            >
+                            View Last Results
+                            </button>
+                        )}
+                        </div>
+                    </div>
+                    )}
+
+                    {!showInput && (
+                    <>
+                        <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6 mb-6">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                            <div className="md:col-span-2">
+                            <label className="block text-sm font-medium text-blue-200 mb-2">
+                                <Search className="inline w-4 h-4 mr-2" />
+                                Search
+                            </label>
+                            <input
+                                type="text"
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                placeholder="Search IP, country, organization, domain..."
+                                className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white placeholder-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                            />
+                            </div>
+
+                            <div>
+                            <label className="block text-sm font-medium text-blue-200 mb-2">
+                                <Filter className="inline w-4 h-4 mr-2" />
+                                Filter by Country
+                            </label>
+                            <select
+                                value={filterCountry}
+                                onChange={(e) => setFilterCountry(e.target.value)}
+                                className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                            >
+                                <option value="" className="bg-slate-800">All Countries</option>
+                                {uniqueCountries.map(country => (
+                                <option key={country} value={country} className="bg-slate-800">{country}</option>
+                                ))}
+                            </select>
+                            </div>
+
+                            <div>
+                            <label className="block text-sm font-medium text-blue-200 mb-2">
+                                <Filter className="inline w-4 h-4 mr-2" />
+                                Filter by Port
+                            </label>
+                            <select
+                                value={filterPort}
+                                onChange={(e) => setFilterPort(e.target.value)}
+                                className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                            >
+                                <option value="" className="bg-slate-800">All Ports</option>
+                                {uniquePorts.sort((a, b) => parseInt(a) - parseInt(b)).map(port => (
+                                <option key={port} value={port} className="bg-slate-800">{port}</option>
+                                ))}
+                            </select>
+                            </div>
+                        </div>
+
+                        <div className="mt-4 flex justify-between items-center">
+                            <div className="flex items-center gap-4">
+                            <div className="text-blue-200">
+                                Showing <span className="font-bold text-white">{filteredAndSortedData.length}</span> of <span className="font-bold text-white">{rawData.length}</span> results
+                            </div>
+                            <button
+                                onClick={() => setShowInput(true)}
+                                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors shadow-lg text-sm"
+                            >
+                                Load New Data
+                            </button>
+                            </div>
+                            <button
+                            onClick={exportToCSV}
+                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-lg"
+                            >
+                            <Download className="w-4 h-4" />
+                            Export CSV
+                            </button>
+                        </div>
+                        </div>
+
+                        <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full border-collapse">
+                            <thead className="bg-white/20">
+                                <tr>
+                                {['IP', 'Port', 'Country', 'City', 'Organization', 'Server', 'Title', 'Protocol'].map(header => (
+                                    <th
+                                    key={header}
+                                    onClick={() => handleSort(header.toLowerCase())}
+                                    className="px-4 py-3 text-left text-sm font-semibold text-white cursor-pointer hover:bg-white/30 transition-colors whitespace-nowrap"
+                                    >
+                                    <div className="flex items-center gap-2">
+                                        {header}
+                                        {sortConfig.key === header.toLowerCase() && (
+                                        sortConfig.direction === 'asc' ? 
+                                            <SortAsc className="w-4 h-4" /> : 
+                                            <SortDesc className="w-4 h-4" />
+                                        )}
+                                    </div>
+                                    </th>
+                                ))}
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/10">
+                                {filteredAndSortedData.map((item, idx) => (
+                                <tr key={idx} className="hover:bg-white/10 transition-colors">
+                                    <td className="px-4 py-3 text-sm text-blue-100 font-mono">{item.ip}</td>
+                                    <td className="px-4 py-3 text-sm text-blue-100">
+                                    <span className="px-2 py-1 bg-blue-600/40 rounded">{item.port}</span>
+                                    </td>
+                                    <td className="px-4 py-3 text-sm text-blue-100">{item.country}</td>
+                                    <td className="px-4 py-3 text-sm text-blue-100">{item.city}</td>
+                                    <td className="px-4 py-3 text-sm text-blue-100 max-w-[200px] truncate" title={item.organization}>{item.organization}</td>
+                                    <td className="px-4 py-3 text-sm text-blue-100">
+                                    {item.server && <span className="px-2 py-1 bg-green-600/40 rounded text-xs">{item.server}</span>}
+                                    </td>
+                                    <td className="px-4 py-3 text-sm text-blue-100 max-w-[250px] truncate" title={item.title}>{item.title}</td>
+                                    <td className="px-4 py-3 text-sm text-blue-100">
+                                    <span className={`px-2 py-1 rounded text-xs ${item.protocol.includes('HTTPS') ? 'bg-green-600/40' : 'bg-yellow-600/40'}`}>
+                                        {item.protocol}
+                                    </span>
+                                    </td>
+                                </tr>
+                                ))}
+                            </tbody>
+                            </table>
+                        </div>
+                        </div>
+
+                        <div className="mt-6 bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-6">
+                        <h2 className="text-xl font-bold text-white mb-4">Summary Statistics</h2>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div className="bg-white/20 rounded-lg p-4">
+                            <div className="text-blue-200 text-sm">Total IPs</div>
+                            <div className="text-white text-2xl font-bold">{rawData.length}</div>
+                            </div>
+                            <div className="bg-white/20 rounded-lg p-4">
+                            <div className="text-blue-200 text-sm">Unique Countries</div>
+                            <div className="text-white text-2xl font-bold">{uniqueCountries.length}</div>
+                            </div>
+                            <div className="bg-white/20 rounded-lg p-4">
+                            <div className="text-blue-200 text-sm">Unique Ports</div>
+                            <div className="text-white text-2xl font-bold">{uniquePorts.length}</div>
+                            </div>
+                            <div className="bg-white/20 rounded-lg p-4">
+                            <div className="text-blue-200 text-sm">HTTPS Endpoints</div>
+                            <div className="text-white text-2xl font-bold">
+                                {rawData.filter(item => item.protocol.includes('HTTPS')).length}
+                            </div>
+                            </div>
+                        </div>
+                        </div>
+                    </>
+                    )}
+                </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<FOFADataParser />);
+    </script>
+</body>
+</html>
